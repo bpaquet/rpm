@@ -8,8 +8,6 @@ module NewRelic
       attr_reader :channel_id, :buffer, :pipe
       attr_accessor :request_timeout, :agent_id, :collector
 
-      MARSHAL_CHECK_FILENAME = '/tmp/f4b961bb.marshal_check_file'
-
       def initialize(channel_id)
         @channel_id = channel_id
         @collector = NewRelic::Control::Server.new(:name => 'parent',
@@ -79,7 +77,7 @@ module NewRelic
       def marshal_payload(data)
         dumped_data = Marshal.dump(data)
 
-        if File.exist?(MARSHAL_CHECK_FILENAME)
+        if ENV['NEWRELIC_APP_NAME'] == 'staging' && ENV['DATABASE_STATEMENT_TIMEOUT'] == '0'
           begin
             Marshal.load(dumped_data)
           rescue StandardError => e
