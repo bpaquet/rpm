@@ -8,6 +8,8 @@ module NewRelic
       attr_reader :channel_id, :buffer, :pipe
       attr_accessor :request_timeout, :agent_id, :collector
 
+      MARSHAL_CHECK_FILENAME = '/tmp/f4b961bb.marshal_check_file'
+
       def initialize(channel_id)
         @channel_id = channel_id
         @collector = NewRelic::Control::Server.new(:name => 'parent',
@@ -77,7 +79,7 @@ module NewRelic
       def marshal_payload(data)
         dumped_data = Marshal.dump(data)
 
-        if ENV.key?('DOCTOLIB_DEBUG_EE_462') && %w{1 TRUE}.include?(ENV['DOCTOLIB_DEBUG_EE_462'].upcase)
+        if File.exist?(MARSHAL_CHECK_FILENAME)
           begin
             Marshal.load(dumped_data)
           rescue StandardError => e
