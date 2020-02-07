@@ -4,6 +4,10 @@
 
 require 'base64'
 
+def nr_debug?
+  ENV['NEWRELIC_APP_NAME'] == 'staging' && ENV['DATABASE_STATEMENT_TIMEOUT'] == '0'
+end
+
 module NewRelic
   module Agent
 
@@ -63,12 +67,20 @@ module NewRelic
         attr_reader :last_read, :parent_pid
 
         def initialize
+          if nr_debug?
+            init_locks 
+            @file = nil
+          end
           @out, @in = IO.pipe
           if defined?(::Encoding::ASCII_8BIT)
             @in.set_encoding(::Encoding::ASCII_8BIT)
           end
           @last_read = Time.now
           @parent_pid = $$
+        end
+
+        def init_locks
+          @read_lock, @write_lock = Mutex.new, Mutex.new
         end
 
         def close
@@ -85,12 +97,41 @@ module NewRelic
         end
 
         def write(data)
+          if nr_debug?
+            lock_granted = @write_lock.try_lock
+
+            NewRelic::Agent.logger.error(
+              "Critical code section violated (Thread ID: #{Thread.current.object_id})\n" +
+              "Backtrace:\n" + caller.join("\n").gsub(/^/, "\t")
+            ) unless lock_granted
+
+            unless @file
+              @file = File.open('/tmp/marshall_log', 'wb')
+            end
+          end
+          
           @out.close unless @out.closed?
           @in << serialize_message_length(data)
           @in << data
+          if nr_debug?
+            @file << serialize_message_length(data)
+            @file << data
+            @file.fsync
+          end
+        ensure
+          @write_lock.unlock if nr_debug? && lock_granted
         end
 
         def read
+          if nr_debug?
+            lock_granted = @read_lock.try_lock
+
+            NewRelic::Agent.logger.error(
+              "Critical code section violated (Thread ID: #{Thread.current.object_id})\n" +
+              "Backtrace:\n" + caller.join("\n").gsub(/^/, "\t")
+            ) unless lock_granted
+          end
+
           @in.close unless @in.closed?
           @last_read = Time.now
           length_bytes = @out.read(NUM_LENGTH_BYTES)
@@ -107,6 +148,8 @@ module NewRelic
             NewRelic::Agent.logger.error("Failed to read bytes for length from pipe.")
             nil
           end
+        ensure
+          @read_lock.unlock if nr_debug? && lock_granted
         end
 
         def eof?
@@ -114,11 +157,13 @@ module NewRelic
         end
 
         def after_fork_in_child
+          init_locks if nr_debug?
           @out.close unless @out.closed?
           write(READY_MARKER)
         end
 
         def after_fork_in_parent
+          init_locks if nr_debug?
           @in.close unless @in.closed?
         end
 
@@ -247,6 +292,11 @@ module NewRelic
         rescue StandardError => e
           ::NewRelic::Agent.logger.error "Failure unmarshalling message from Resque child process, pid #{Process.pid}, size #{data.size}", e
           ::NewRelic::Agent.logger.error Base64.encode64(data)
+          if nr_debug? && File.exist?('/tmp/marshall_log')
+            content = File.binread('/tmp/marshall_log')
+            ::NewRelic::Agent.logger.error "Sent #{content.size}"
+            ::NewRelic::Agent.logger.error Base64.encode64(content)
+          end
           nil
         end
 
