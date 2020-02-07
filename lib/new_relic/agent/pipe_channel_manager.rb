@@ -63,6 +63,8 @@ module NewRelic
         attr_reader :last_read, :parent_pid
 
         def initialize
+          @read_lock, @write_lock = Mutex.new, Mutex.new
+
           @out, @in = IO.pipe
           if defined?(::Encoding::ASCII_8BIT)
             @in.set_encoding(::Encoding::ASCII_8BIT)
@@ -85,19 +87,63 @@ module NewRelic
         end
 
         def write(data)
+          lock_granted = @write_lock.try_lock
+
+          NewRelic::Agent.logger.error(
+            "Critical code section violated (Thread ID: #{Thread.current.object_id})\n" +
+            "Backtrace:\n" +
+            caller.join("\n").gsub(/^/, "\t")
+          ) unless lock_granted
+
           @out.close unless @out.closed?
-          @in << serialize_message_length(data)
+
+          message_length_serial = serialize_message_length(data)
+          data_length = data.bytesize
+
+          NewRelic::Agent.logger.error(
+            "Serialized message length is not four bytes (got: #{message_length_serial.bytesize})\n" +
+            "Backtrace:\n" +
+            caller.join("\n").gsub(/^/, "\t")
+          ) unless NUM_LENGTH_BYTES == message_length_serial.bytesize
+          NewRelic::Agent.logger.error(
+            "Serialized message length did not decode into original message length (message_length_serial.unpack('L>') != #{data_length}})\n" +
+            "Backtrace:\n" +
+            caller.join("\n").gsub(/^/, "\t")
+          ) unless data_length == deserialize_message_length(message_length_serial)
+
+          @in << message_length_serial
           @in << data
+        ensure
+          @write_lock.unlock if lock_granted
         end
 
         def read
+          lock_granted = @read_lock.try_lock
+
+          NewRelic::Agent.logger.error(
+            "Critical code section violated (Thread ID: #{Thread.current.object_id})\n" +
+            "Backtrace:\n" +
+            caller.join("\n").gsub(/^/, "\t")
+          ) unless lock_granted
+
           @in.close unless @in.closed?
+
           @last_read = Time.now
           length_bytes = @out.read(NUM_LENGTH_BYTES)
+
           if length_bytes
             message_length = deserialize_message_length(length_bytes)
             if message_length
-              @out.read(message_length)
+              out_data_read = @out.read(message_length)
+
+              out_data_read_length = out_data_read.bytesize
+              NewRelic::Agent.logger.error(
+                "Did not read message length data (message_length != #{out_data_read_length})\n" +
+                "Backtrace:\n" +
+                caller.join("\n").gsub(/^/, "\t")
+              ) unless length_bytes == out_data_read_length
+
+              return out_data_read
             else
               length_hex = length_bytes.bytes.map { |b| b.to_s(16) }.join(' ')
               NewRelic::Agent.logger.error("Failed to deserialize message length from pipe. Bytes: [#{length_hex}]")
@@ -107,6 +153,8 @@ module NewRelic
             NewRelic::Agent.logger.error("Failed to read bytes for length from pipe.")
             nil
           end
+        ensure
+          @read_lock.unlock if lock_granted
         end
 
         def eof?

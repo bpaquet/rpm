@@ -75,7 +75,18 @@ module NewRelic
       private
 
       def marshal_payload(data)
-        Marshal.dump(data)
+        dumped_data = Marshal.dump(data)
+
+        if ENV.key?('DOCTOLIB_DEBUG_EE_462') && %w{1 TRUE}.include?(ENV['DOCTOLIB_DEBUG_EE_462'].upcase)
+          begin
+            Marshal.load(dumped_data)
+          rescue StandardError => e
+            ::NewRelic::Agent.logger.error "Failure unmarshalling message in sanity check, pid #{Process.pid}, size #{dumped_data.size}", e
+            ::NewRelic::Agent.logger.error Base64.encode64(dumped_data)
+          end
+        end
+
+        return dumped_data
       end
 
       def write_to_pipe(endpoint, data)
