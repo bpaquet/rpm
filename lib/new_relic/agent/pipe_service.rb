@@ -8,6 +8,8 @@ module NewRelic
       attr_reader :channel_id, :buffer, :pipe
       attr_accessor :request_timeout, :agent_id, :collector
 
+      MARSHAL_CHECK_FILENAME = '/tmp/f4b961bb.marshal_check_file'
+
       def initialize(channel_id)
         @channel_id = channel_id
         @collector = NewRelic::Control::Server.new(:name => 'parent',
@@ -75,7 +77,21 @@ module NewRelic
       private
 
       def marshal_payload(data)
-        Marshal.dump(data)
+        dumped_data = Marshal.dump(data)
+
+        if File.exist?(MARSHAL_CHECK_FILENAME)
+          begin
+            Marshal.load(dumped_data)
+          rescue StandardError => e
+            NewRelic::Agent.logger.error(
+              "Failure unmarshalling message just dumped (PID: #{Process.pid}, size: #{dumped_data.size})\n" +
+              "Data: #{data.inspect}\n" +
+              "Backtrace:\n" + caller.join("\n").gsub(/^/, "\t"), e
+            )
+          end
+        end
+
+        return dumped_data
       end
 
       def write_to_pipe(endpoint, data)
