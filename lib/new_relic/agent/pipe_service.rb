@@ -85,6 +85,7 @@ module NewRelic
           rescue StandardError => e
             NewRelic::Agent.logger.error(
               "Failure unmarshalling message just dumped (PID: #{Process.pid}, size: #{dumped_data.size})\n" +
+              "Data: #{data.inspect}\n" +
               "Backtrace:\n" + caller.join("\n").gsub(/^/, "\t"), e
             )
           end
