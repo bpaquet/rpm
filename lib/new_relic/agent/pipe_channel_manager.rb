@@ -63,12 +63,17 @@ module NewRelic
         attr_reader :last_read, :parent_pid
 
         def initialize
+          init_locks
           @out, @in = IO.pipe
           if defined?(::Encoding::ASCII_8BIT)
             @in.set_encoding(::Encoding::ASCII_8BIT)
           end
           @last_read = Time.now
           @parent_pid = $$
+        end
+
+        def init_locks
+          @read_lock, @write_lock = Mutex.new, Mutex.new
         end
 
         def close
@@ -85,12 +90,28 @@ module NewRelic
         end
 
         def write(data)
+          lock_granted = @write_lock.try_lock
+
+          NewRelic::Agent.logger.error(
+            "Critical code section violated (Thread ID: #{Thread.current.object_id})\n" +
+            "Backtrace:\n" + caller.join("\n").gsub(/^/, "\t")
+          ) unless lock_granted
+
           @out.close unless @out.closed?
           @in << serialize_message_length(data)
           @in << data
+        ensure
+          @write_lock.unlock if lock_granted
         end
 
         def read
+          lock_granted = @read_lock.try_lock
+
+          NewRelic::Agent.logger.error(
+            "Critical code section violated (Thread ID: #{Thread.current.object_id})\n" +
+            "Backtrace:\n" + caller.join("\n").gsub(/^/, "\t")
+          ) unless lock_granted
+
           @in.close unless @in.closed?
           @last_read = Time.now
           length_bytes = @out.read(NUM_LENGTH_BYTES)
@@ -107,6 +128,8 @@ module NewRelic
             NewRelic::Agent.logger.error("Failed to read bytes for length from pipe.")
             nil
           end
+        ensure
+          @read_lock.unlock if lock_granted
         end
 
         def eof?
@@ -114,11 +137,13 @@ module NewRelic
         end
 
         def after_fork_in_child
+          init_locks
           @out.close unless @out.closed?
           write(READY_MARKER)
         end
 
         def after_fork_in_parent
+          init_locks
           @in.close unless @in.closed?
         end
 
