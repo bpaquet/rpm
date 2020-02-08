@@ -564,6 +564,8 @@ module NewRelic
 
         def flush_pipe_data
           if connected? && @service.is_a?(::NewRelic::Agent::PipeService)
+            stop_event_loop
+            @worker_thread.join
             transmit_data
             transmit_analytic_event_data
             transmit_custom_event_data
